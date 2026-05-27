@@ -7,73 +7,117 @@ import { createNewGame, joinGame, executeMove, executePass, executeExchange } fr
  * Architecture:
  * - Game state is stored in localStorage as the source of truth for each player
  * - A free WebSocket relay (deployed on Render) syncs state between players
- * - Falls back to manual "refresh" polling if WebSocket is unavailable
- * 
- * For GitHub Pages deployment, we use a tiny relay server deployed on Render.com (free tier).
+ * - Falls back to HTTP polling if WebSocket is unavailable
  */
 
 // Relay server URL - deployed on Render free tier
-// Falls back to localStorage-only mode if relay is unavailable
 const RELAY_URL = getRelayUrl();
+const RELAY_HTTP_URL = getRelayHttpUrl();
 
 function getRelayUrl(): string {
-  // Check if there's a custom relay URL set
   const custom = localStorage.getItem('kings-cribbage-relay-url');
   if (custom) return custom;
-  // Default relay - will be set up on Render
   return 'wss://kings-cribbage-relay.onrender.com';
+}
+
+function getRelayHttpUrl(): string {
+  // Convert ws/wss URL to http/https for REST fallback
+  const wsUrl = getRelayUrl();
+  return wsUrl.replace('wss://', 'https://').replace('ws://', 'http://');
 }
 
 // WebSocket connection management
 let ws: WebSocket | null = null;
+let wsConnected = false;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let gameSubscriptions: Map<string, (game: GameState) => void> = new Map();
+let wsConnectPromise: Promise<boolean> | null = null;
+let wsConnectResolve: ((value: boolean) => void) | null = null;
 
-function connectWebSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return;
+function connectWebSocket(): Promise<boolean> {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return Promise.resolve(true);
   }
 
-  try {
-    ws = new WebSocket(RELAY_URL);
+  if (wsConnectPromise) {
+    return wsConnectPromise;
+  }
 
-    ws.onopen = () => {
-      console.log('[Kings Cribbage] Connected to relay');
-      // Re-subscribe to all active games
-      for (const gameCode of gameSubscriptions.keys()) {
-        ws?.send(JSON.stringify({ type: 'subscribe', gameCode }));
-      }
-    };
+  wsConnectPromise = new Promise<boolean>((resolve) => {
+    wsConnectResolve = resolve;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'gameUpdate' && msg.gameCode && msg.data) {
-          const game = msg.data as GameState;
-          // Save to localStorage
-          saveGameToStorage(msg.gameCode, game);
-          // Notify subscribers
-          const callback = gameSubscriptions.get(msg.gameCode);
-          if (callback) callback(game);
+    try {
+      ws = new WebSocket(RELAY_URL);
+
+      ws.onopen = () => {
+        console.log('[Kings Cribbage] Connected to relay');
+        wsConnected = true;
+        wsConnectPromise = null;
+        if (wsConnectResolve) {
+          wsConnectResolve(true);
+          wsConnectResolve = null;
         }
-      } catch (e) {
-        console.warn('[Kings Cribbage] Failed to parse relay message:', e);
-      }
-    };
+        // Re-subscribe to all active games
+        for (const gameCode of gameSubscriptions.keys()) {
+          ws?.send(JSON.stringify({ type: 'subscribe', gameCode }));
+        }
+      };
 
-    ws.onclose = () => {
-      console.log('[Kings Cribbage] Disconnected from relay, will retry...');
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'gameUpdate' && msg.gameCode && msg.data) {
+            const game = msg.data as GameState;
+            saveGameToStorage(msg.gameCode, game);
+            const callback = gameSubscriptions.get(msg.gameCode);
+            if (callback) callback(game);
+          }
+        } catch (e) {
+          console.warn('[Kings Cribbage] Failed to parse relay message:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('[Kings Cribbage] Disconnected from relay');
+        wsConnected = false;
+        ws = null;
+        wsConnectPromise = null;
+        if (wsConnectResolve) {
+          wsConnectResolve(false);
+          wsConnectResolve = null;
+        }
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        console.warn('[Kings Cribbage] Relay connection error');
+        wsConnected = false;
+        wsConnectPromise = null;
+        if (wsConnectResolve) {
+          wsConnectResolve(false);
+          wsConnectResolve = null;
+        }
+        ws?.close();
+      };
+
+      // Timeout: if WebSocket doesn't connect within 3 seconds, resolve false
+      setTimeout(() => {
+        if (wsConnectResolve) {
+          wsConnectResolve(false);
+          wsConnectResolve = null;
+          wsConnectPromise = null;
+        }
+      }, 3000);
+
+    } catch (e) {
+      console.warn('[Kings Cribbage] Could not connect to relay:', e);
+      wsConnectPromise = null;
+      resolve(false);
       scheduleReconnect();
-    };
+    }
+  });
 
-    ws.onerror = () => {
-      console.warn('[Kings Cribbage] Relay connection error, falling back to local mode');
-      ws?.close();
-    };
-  } catch (e) {
-    console.warn('[Kings Cribbage] Could not connect to relay:', e);
-    scheduleReconnect();
-  }
+  return wsConnectPromise;
 }
 
 function scheduleReconnect() {
@@ -89,7 +133,7 @@ function sendToRelay(gameCode: string, game: GameState) {
   }
 }
 
-// Initialize connection
+// Initialize connection (don't await - let it connect in background)
 connectWebSocket();
 
 // ============ LOCAL STORAGE ============
@@ -138,6 +182,67 @@ export function generateGameCode(): string {
   return code;
 }
 
+// ============ FETCH GAME FROM RELAY ============
+
+/**
+ * Fetch game state from relay. Waits for WebSocket to connect first.
+ * Falls back to HTTP GET if WebSocket fails.
+ */
+async function fetchGameFromRelay(gameCode: string): Promise<GameState | null> {
+  // Wait for WebSocket to connect (up to 3 seconds)
+  const connected = await connectWebSocket();
+
+  if (connected && ws && ws.readyState === WebSocket.OPEN) {
+    // Try WebSocket approach
+    const result = await fetchGameViaWebSocket(gameCode);
+    if (result) return result;
+  }
+
+  // Fallback: try HTTP GET
+  return fetchGameViaHttp(gameCode);
+}
+
+function fetchGameViaWebSocket(gameCode: string): Promise<GameState | null> {
+  return new Promise((resolve) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      resolve(null);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      ws?.removeEventListener('message', handler);
+      resolve(null);
+    }, 3000);
+
+    const handler = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'gameState' && msg.gameCode === gameCode) {
+          clearTimeout(timeout);
+          ws?.removeEventListener('message', handler);
+          resolve(msg.data || null);
+        }
+      } catch { /* ignore */ }
+    };
+
+    ws.addEventListener('message', handler);
+    ws.send(JSON.stringify({ type: 'getGame', gameCode }));
+  });
+}
+
+async function fetchGameViaHttp(gameCode: string): Promise<GameState | null> {
+  try {
+    const response = await fetch(`${RELAY_HTTP_URL}/game/${gameCode}`);
+    if (response.ok) {
+      const data = await response.json();
+      return data as GameState;
+    }
+  } catch (e) {
+    console.warn('[Kings Cribbage] HTTP fallback failed:', e);
+  }
+  return null;
+}
+
 // ============ GAME OPERATIONS ============
 
 export async function createGame(playerName: string): Promise<{ gameCode: string; game: GameState }> {
@@ -157,13 +262,15 @@ export async function joinGameByCode(gameCode: string, playerName: string): Prom
   const playerId = getPlayerId();
   setPlayerName(playerName);
 
-  // Try to get game from relay first
+  // Try to get game from relay first (waits for connection)
   const gameFromRelay = await fetchGameFromRelay(gameCode);
+  // Fall back to local storage
   const game = gameFromRelay || loadGameFromStorage(gameCode);
 
   if (!game) return null;
 
   if (game.status !== 'waiting') {
+    // Game already started - check if this player is already in it
     if (game.players.some(p => p.id === playerId)) {
       saveGameToStorage(gameCode, game);
       return game;
@@ -171,36 +278,17 @@ export async function joinGameByCode(gameCode: string, playerName: string): Prom
     return null;
   }
 
+  // Don't let the same player join their own game
+  if (game.players.some(p => p.id === playerId)) {
+    saveGameToStorage(gameCode, game);
+    return game;
+  }
+
   const updatedGame = joinGame(game, playerId, playerName);
   saveGameToStorage(gameCode, updatedGame);
   sendToRelay(gameCode, updatedGame);
 
   return updatedGame;
-}
-
-async function fetchGameFromRelay(gameCode: string): Promise<GameState | null> {
-  return new Promise((resolve) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      resolve(null);
-      return;
-    }
-
-    const timeout = setTimeout(() => resolve(null), 3000);
-
-    const handler = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'gameState' && msg.gameCode === gameCode) {
-          clearTimeout(timeout);
-          ws?.removeEventListener('message', handler);
-          resolve(msg.data || null);
-        }
-      } catch { /* ignore */ }
-    };
-
-    ws.addEventListener('message', handler);
-    ws.send(JSON.stringify({ type: 'getGame', gameCode }));
-  });
 }
 
 export function subscribeToGame(gameCode: string, callback: (game: GameState) => void): () => void {
@@ -218,10 +306,17 @@ export function subscribeToGame(gameCode: string, callback: (game: GameState) =>
   }
 
   // Set up polling as fallback (every 3 seconds)
-  const pollInterval = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) return; // WebSocket is handling it
-    const game = loadGameFromStorage(gameCode);
-    if (game) callback(game);
+  const pollInterval = setInterval(async () => {
+    // Try to get fresh data from relay via HTTP
+    const fresh = await fetchGameViaHttp(gameCode);
+    if (fresh) {
+      saveGameToStorage(gameCode, fresh);
+      callback(fresh);
+    } else {
+      // Fall back to local
+      const game = loadGameFromStorage(gameCode);
+      if (game) callback(game);
+    }
   }, 3000);
 
   return () => {
@@ -247,7 +342,6 @@ export async function makeMove(gameCode: string, placedTiles: PlacedTile[]): Pro
   saveGameToStorage(gameCode, updatedGame);
   sendToRelay(gameCode, updatedGame);
 
-  // Notify local subscribers
   const callback = gameSubscriptions.get(gameCode);
   if (callback) callback(updatedGame);
 
