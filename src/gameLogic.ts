@@ -586,6 +586,7 @@ export function createNewGame(player1Id: string, player1Name: string): GameState
     consecutivePasses: 0,
     moveHistory: [],
     isFirstMove: true,
+    chat: [],
   };
 }
 

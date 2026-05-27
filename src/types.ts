@@ -31,6 +31,14 @@ export interface Player {
 
 export type GameStatus = 'waiting' | 'active' | 'finished';
 
+export interface ChatMessage {
+  id: string;
+  playerId: string;
+  playerName: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface GameState {
   id: string;
   board: (Tile | null)[][]; // 13x13 grid
@@ -45,6 +53,7 @@ export interface GameState {
   consecutivePasses: number;
   moveHistory: MoveRecord[];
   isFirstMove: boolean;
+  chat: ChatMessage[];
 }
 
 export interface MoveRecord {

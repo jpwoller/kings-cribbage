@@ -374,6 +374,35 @@ export async function exchangeTiles(gameCode: string, tileIds: string[]): Promis
   if (callback) callback(updatedGame);
 }
 
+// ============ CHAT ============
+
+export async function sendChatMessage(gameCode: string, text: string): Promise<void> {
+  const playerId = getPlayerId();
+  const playerName = getPlayerName();
+  const game = loadGameFromStorage(gameCode);
+  if (!game) return;
+
+  const message = {
+    id: 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8),
+    playerId,
+    playerName,
+    text: text.trim(),
+    timestamp: Date.now(),
+  };
+
+  const updatedGame = {
+    ...game,
+    chat: [...(game.chat || []), message],
+    updatedAt: Date.now(),
+  };
+
+  saveGameToStorage(gameCode, updatedGame);
+  sendToRelay(gameCode, updatedGame);
+
+  const callback = gameSubscriptions.get(gameCode);
+  if (callback) callback(updatedGame);
+}
+
 // ============ MY GAMES LIST ============
 
 export function getMyGames(): string[] {

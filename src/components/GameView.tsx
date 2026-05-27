@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { GameState, PlacedTile, Tile } from '../types';
-import { subscribeToGame, makeMove, passTurn, exchangeTiles, getPlayerId } from '../multiplayer';
+import { subscribeToGame, makeMove, passTurn, exchangeTiles, getPlayerId, sendChatMessage } from '../multiplayer';
 import { calculateMoveScore } from '../gameLogic';
 import { Board } from './Board';
 import { TileRack } from './TileRack';
 import { ScoreBoard } from './ScoreBoard';
 import { MoveHistory } from './MoveHistory';
+import { Chat } from './Chat';
 
 interface GameViewProps {
   gameCode: string;
@@ -289,7 +290,7 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
           </div>
 
           {/* Scores */}
-          <ScoreBoard players={game.players} currentPlayerId={playerId} />
+          <ScoreBoard players={game.players} currentPlayerId={playerId} currentPlayerIndex={game.currentPlayerIndex} />
 
           {/* Bag Count */}
           <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
@@ -424,6 +425,12 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
           )}
         </div>
       </div>
+
+      {/* Chat */}
+      <Chat
+        messages={game.chat || []}
+        onSend={(text) => sendChatMessage(gameCode, text)}
+      />
     </div>
   );
 }
