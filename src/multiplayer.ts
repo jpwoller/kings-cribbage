@@ -17,7 +17,7 @@ const RELAY_HTTP_URL = getRelayHttpUrl();
 function getRelayUrl(): string {
   const custom = localStorage.getItem('kings-cribbage-relay-url');
   if (custom) return custom;
-  return 'wss://kings-cribbage-relay.onrender.com';
+  return 'wss://kings-cribbage.onrender.com';
 }
 
 function getRelayHttpUrl(): string {
