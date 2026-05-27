@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { GameState, PlacedTile, Tile } from '../types';
-import { BOARD_SIZE } from '../types';
 import { subscribeToGame, makeMove, passTurn, exchangeTiles, getPlayerId } from '../multiplayer';
-import { calculateMoveScore, getEffectiveRank } from '../gameLogic';
+import { calculateMoveScore } from '../gameLogic';
 import { Board } from './Board';
 import { TileRack } from './TileRack';
 import { ScoreBoard } from './ScoreBoard';
@@ -23,6 +22,7 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
   const [exchangeMode, setExchangeMode] = useState(false);
   const [selectedForExchange, setSelectedForExchange] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
+  const [draggedTile, setDraggedTile] = useState<Tile | null>(null);
 
   const playerId = getPlayerId();
 
@@ -48,12 +48,14 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
       }
     } else {
       setPreviewScore(null);
+      setError('');
     }
   }, [placedTiles, game]);
 
   const currentPlayer = game?.players[game.currentPlayerIndex];
   const isMyTurn = currentPlayer?.id === playerId;
   const myPlayer = game?.players.find(p => p.id === playerId);
+  const opponentPlayer = game?.players.find(p => p.id !== playerId);
   const myRack = myPlayer?.rack || [];
 
   // Tiles available on rack (not yet placed on board)
@@ -64,7 +66,7 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
   const handleCellClick = useCallback((row: number, col: number) => {
     if (!game || !isMyTurn || exchangeMode) return;
 
-    // If there's already a placed tile here (from this turn), remove it
+    // If there's already a placed tile here (from this turn), remove it back to rack
     const existingPlaced = placedTiles.find(pt => pt.row === row && pt.col === col);
     if (existingPlaced) {
       setPlacedTiles(prev => prev.filter(pt => !(pt.row === row && pt.col === col)));
@@ -81,6 +83,25 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
       setSelectedTile(null);
     }
   }, [game, isMyTurn, selectedTile, placedTiles, exchangeMode]);
+
+  const handleDropTile = useCallback((row: number, col: number) => {
+    if (!game || !isMyTurn) return;
+    const tile = draggedTile || selectedTile;
+    if (!tile) return;
+
+    // Make sure tile is still in available rack
+    const isAvailable = availableRack.some(t => t.id === tile.id);
+    if (!isAvailable) return;
+
+    setPlacedTiles(prev => [...prev, { tile, row, col }]);
+    setSelectedTile(null);
+    setDraggedTile(null);
+  }, [game, isMyTurn, draggedTile, selectedTile, availableRack]);
+
+  const handleDragStart = (tile: Tile) => {
+    setDraggedTile(tile);
+    setSelectedTile(tile);
+  };
 
   const handleTileSelect = (tile: Tile) => {
     if (exchangeMode) {
@@ -143,7 +164,6 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
   };
 
   const handleFlipTile = (tile: Tile) => {
-    // Only for 6/9 tiles
     if (tile.rank !== '6' && tile.rank !== '9') return;
 
     // Check if tile is in placed tiles
@@ -240,149 +260,169 @@ export function GameView({ gameCode, onBack }: GameViewProps) {
   }
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row">
-      {/* Sidebar - Scores & Info */}
-      <div className="lg:w-64 p-4 flex flex-col gap-4">
-        {/* Game Code */}
-        <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400">Game Code</span>
-            <button onClick={handleCopyCode} className="text-xs text-green-400 hover:text-green-300">
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
-          </div>
-          <span className="font-mono text-lg text-white tracking-wider">{gameCode}</span>
-        </div>
-
-        {/* Turn Indicator */}
-        <div className={`rounded-lg p-3 border ${isMyTurn ? 'bg-green-900/30 border-green-700' : 'bg-slate-800/80 border-slate-700'}`}>
-          <p className="text-sm font-medium">
-            {isMyTurn ? (
-              <span className="text-green-400">Your Turn!</span>
-            ) : (
-              <span className="text-slate-400">Waiting for {currentPlayer?.name}...</span>
-            )}
-          </p>
-        </div>
-
-        {/* Scores */}
-        <ScoreBoard players={game.players} currentPlayerId={playerId} />
-
-        {/* Bag Count */}
-        <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
-          <span className="text-xs text-slate-400">Tiles in Bag</span>
-          <p className="text-lg font-bold text-white">{game.bag.length}</p>
-        </div>
-
-        {/* History Toggle */}
-        <button
-          onClick={() => setShowHistory(!showHistory)}
-          className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-left hover:bg-slate-700/80 transition-colors"
-        >
-          <span className="text-sm text-slate-300">
-            {showHistory ? 'Hide' : 'Show'} Move History
-          </span>
-        </button>
-
-        {showHistory && <MoveHistory moves={game.moveHistory} />}
-
-        <button
-          onClick={onBack}
-          className="text-slate-500 hover:text-white text-sm mt-auto"
-        >
-          ← Back to Lobby
-        </button>
+    <div className="min-h-screen flex flex-col">
+      {/* BIG TURN BANNER */}
+      <div className={`w-full py-3 px-4 text-center font-bold text-lg ${
+        isMyTurn 
+          ? 'bg-green-700/90 text-green-100 border-b-2 border-green-400' 
+          : 'bg-slate-700/90 text-slate-300 border-b-2 border-slate-500'
+      }`}>
+        {isMyTurn ? (
+          <span>YOUR TURN — Drag tiles onto the board, then hit Submit</span>
+        ) : (
+          <span>Waiting for {opponentPlayer?.name || 'opponent'} to play...</span>
+        )}
       </div>
 
-      {/* Main Game Area */}
-      <div className="flex-1 flex flex-col items-center p-4 gap-4">
-        {/* Board */}
-        <Board
-          board={game.board}
-          placedTiles={placedTiles}
-          lastMove={game.lastMove}
-          onCellClick={handleCellClick}
-          selectedTile={selectedTile}
-        />
-
-        {/* Preview Score */}
-        {previewScore !== null && (
-          <div className="bg-green-900/50 border border-green-700 rounded-lg px-4 py-2">
-            <span className="text-green-300 font-medium">Score: +{previewScore} points</span>
+      <div className="flex-1 flex flex-col lg:flex-row">
+        {/* Sidebar - Scores & Info */}
+        <div className="lg:w-64 p-4 flex flex-col gap-4">
+          {/* Game Code */}
+          <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">Game Code</span>
+              <button onClick={handleCopyCode} className="text-xs text-green-400 hover:text-green-300">
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <span className="font-mono text-lg text-white tracking-wider">{gameCode}</span>
           </div>
-        )}
 
-        {/* Error */}
-        {error && (
-          <div className="bg-red-900/50 border border-red-700 rounded-lg px-4 py-2 max-w-md">
-            <span className="text-red-300 text-sm">{error}</span>
+          {/* Scores */}
+          <ScoreBoard players={game.players} currentPlayerId={playerId} />
+
+          {/* Bag Count */}
+          <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+            <span className="text-xs text-slate-400">Tiles in Bag</span>
+            <p className="text-lg font-bold text-white">{game.bag.length}</p>
           </div>
-        )}
 
-        {/* Tile Rack */}
-        {myPlayer && (
-          <TileRack
-            tiles={availableRack}
+          {/* History Toggle */}
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-left hover:bg-slate-700/80 transition-colors"
+          >
+            <span className="text-sm text-slate-300">
+              {showHistory ? 'Hide' : 'Show'} Move History
+            </span>
+          </button>
+
+          {showHistory && <MoveHistory moves={game.moveHistory} />}
+
+          <button
+            onClick={onBack}
+            className="text-slate-500 hover:text-white text-sm mt-auto"
+          >
+            ← Back to Lobby
+          </button>
+        </div>
+
+        {/* Main Game Area */}
+        <div className="flex-1 flex flex-col items-center p-4 gap-4">
+          {/* Board */}
+          <Board
+            board={game.board}
+            placedTiles={placedTiles}
+            lastMove={game.lastMove}
+            onCellClick={handleCellClick}
+            onDropTile={handleDropTile}
             selectedTile={selectedTile}
-            selectedForExchange={selectedForExchange}
-            exchangeMode={exchangeMode}
-            onTileSelect={handleTileSelect}
-            onFlipTile={handleFlipTile}
+            isMyTurn={isMyTurn}
           />
-        )}
 
-        {/* Action Buttons */}
-        {isMyTurn && (
-          <div className="flex flex-wrap gap-2 justify-center">
-            {!exchangeMode ? (
-              <>
-                <button
-                  onClick={handleSubmitMove}
-                  disabled={placedTiles.length === 0 || previewScore === null}
-                  className="py-2 px-6 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg transition-colors"
-                >
-                  Submit Move
-                </button>
-                <button
-                  onClick={handleRecall}
-                  disabled={placedTiles.length === 0}
-                  className="py-2 px-4 bg-slate-600 hover:bg-slate-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg transition-colors"
-                >
-                  Recall
-                </button>
-                <button
-                  onClick={() => setExchangeMode(true)}
-                  disabled={game.bag.length === 0}
-                  className="py-2 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg transition-colors"
-                >
-                  Exchange
-                </button>
-                <button
-                  onClick={handlePass}
-                  className="py-2 px-4 bg-red-700 hover:bg-red-600 text-white rounded-lg transition-colors"
-                >
-                  Pass
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  onClick={handleExchange}
-                  disabled={selectedForExchange.length === 0}
-                  className="py-2 px-6 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg transition-colors"
-                >
-                  Confirm Exchange ({selectedForExchange.length})
-                </button>
-                <button
-                  onClick={() => { setExchangeMode(false); setSelectedForExchange([]); }}
-                  className="py-2 px-4 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-          </div>
-        )}
+          {/* Preview Score & Submit Area */}
+          {placedTiles.length > 0 && (
+            <div className="flex items-center gap-4 bg-slate-800/90 rounded-xl p-4 border border-slate-700">
+              {previewScore !== null ? (
+                <>
+                  <span className="text-green-300 font-bold text-lg">+{previewScore} pts</span>
+                  <button
+                    onClick={handleSubmitMove}
+                    className="py-3 px-8 bg-green-600 hover:bg-green-500 text-white font-bold text-lg rounded-lg transition-colors shadow-lg shadow-green-600/30 animate-pulse"
+                  >
+                    Submit Move
+                  </button>
+                </>
+              ) : (
+                <span className="text-amber-300 text-sm">
+                  {error || 'Place more tiles to form a valid scoring hand...'}
+                </span>
+              )}
+              <button
+                onClick={handleRecall}
+                className="py-2 px-4 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors text-sm"
+              >
+                Recall All
+              </button>
+            </div>
+          )}
+
+          {/* Error (only show if no tiles placed — otherwise it's in the submit area) */}
+          {error && placedTiles.length === 0 && (
+            <div className="bg-red-900/50 border border-red-700 rounded-lg px-4 py-2 max-w-md">
+              <span className="text-red-300 text-sm">{error}</span>
+            </div>
+          )}
+
+          {/* Tile Rack */}
+          {myPlayer && (
+            <TileRack
+              tiles={availableRack}
+              selectedTile={selectedTile}
+              selectedForExchange={selectedForExchange}
+              exchangeMode={exchangeMode}
+              onTileSelect={handleTileSelect}
+              onFlipTile={handleFlipTile}
+              onDragStart={handleDragStart}
+            />
+          )}
+
+          {/* Action Buttons */}
+          {isMyTurn && placedTiles.length === 0 && (
+            <div className="flex flex-wrap gap-2 justify-center">
+              {!exchangeMode ? (
+                <>
+                  <button
+                    onClick={() => setExchangeMode(true)}
+                    disabled={game.bag.length === 0}
+                    className="py-2 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg transition-colors"
+                  >
+                    Exchange Tiles
+                  </button>
+                  <button
+                    onClick={handlePass}
+                    className="py-2 px-4 bg-red-700 hover:bg-red-600 text-white rounded-lg transition-colors"
+                  >
+                    Pass Turn
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={handleExchange}
+                    disabled={selectedForExchange.length === 0}
+                    className="py-2 px-6 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg transition-colors"
+                  >
+                    Confirm Exchange ({selectedForExchange.length})
+                  </button>
+                  <button
+                    onClick={() => { setExchangeMode(false); setSelectedForExchange([]); }}
+                    className="py-2 px-4 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Not your turn overlay hint */}
+          {!isMyTurn && (
+            <div className="text-slate-400 text-sm italic">
+              It's {opponentPlayer?.name || 'your opponent'}'s turn. You'll be notified when they play.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

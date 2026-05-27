@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Tile, PlacedTile } from '../types';
 import { BOARD_SIZE } from '../types';
 import { getEffectiveRank } from '../gameLogic';
@@ -7,16 +8,44 @@ interface BoardProps {
   placedTiles: PlacedTile[];
   lastMove: PlacedTile[] | null;
   onCellClick: (row: number, col: number) => void;
+  onDropTile: (row: number, col: number) => void;
   selectedTile: Tile | null;
+  isMyTurn: boolean;
 }
 
-export function Board({ board, placedTiles, lastMove, onCellClick, selectedTile }: BoardProps) {
+export function Board({ board, placedTiles, lastMove, onCellClick, onDropTile, selectedTile, isMyTurn }: BoardProps) {
+  const [dragOverCell, setDragOverCell] = useState<{ row: number; col: number } | null>(null);
+
   const isLastMoveCell = (row: number, col: number): boolean => {
     return lastMove?.some(pt => pt.row === row && pt.col === col) || false;
   };
 
   const getPlacedTile = (row: number, col: number): PlacedTile | undefined => {
     return placedTiles.find(pt => pt.row === row && pt.col === col);
+  };
+
+  const handleDragOver = (e: React.DragEvent, row: number, col: number) => {
+    e.preventDefault();
+    const boardTile = board[row]?.[col];
+    const placed = getPlacedTile(row, col);
+    if (!boardTile && !placed && isMyTurn) {
+      e.dataTransfer.dropEffect = 'move';
+      setDragOverCell({ row, col });
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverCell(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, row: number, col: number) => {
+    e.preventDefault();
+    setDragOverCell(null);
+    const boardTile = board[row]?.[col];
+    const placed = getPlacedTile(row, col);
+    if (!boardTile && !placed && isMyTurn) {
+      onDropTile(row, col);
+    }
   };
 
   return (
@@ -36,20 +65,26 @@ export function Board({ board, placedTiles, lastMove, onCellClick, selectedTile 
             const isLastMove = isLastMoveCell(row, col);
             const isPlacedThisTurn = !!placed;
             const isEmpty = !tile;
-            const canPlace = isEmpty && selectedTile;
+            const canPlace = isEmpty && isMyTurn;
+            const isDragOver = dragOverCell?.row === row && dragOverCell?.col === col;
 
             return (
               <div
                 key={`${row}-${col}`}
                 onClick={() => onCellClick(row, col)}
+                onDragOver={(e) => handleDragOver(e, row, col)}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, row, col)}
                 className={`
                   w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center rounded-sm text-xs sm:text-sm font-bold
                   transition-all duration-150 select-none
                   ${isEmpty ? 'bg-green-800/60' : ''}
-                  ${canPlace ? 'cursor-pointer hover:bg-green-600/80 ring-1 ring-green-400/30' : ''}
+                  ${canPlace && selectedTile ? 'cursor-pointer hover:bg-green-600/80 ring-1 ring-green-400/30' : ''}
+                  ${canPlace && !selectedTile ? 'cursor-default' : ''}
                   ${tile && !isPlacedThisTurn ? 'cursor-default' : ''}
-                  ${isPlacedThisTurn ? 'cursor-pointer ring-2 ring-amber-400 animate-pulse' : ''}
+                  ${isPlacedThisTurn ? 'cursor-pointer ring-2 ring-amber-400' : ''}
                   ${isLastMove && !isPlacedThisTurn ? 'ring-1 ring-blue-400' : ''}
+                  ${isDragOver ? 'bg-green-500/80 ring-2 ring-green-300 scale-110' : ''}
                 `}
               >
                 {tile && (
